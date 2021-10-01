@@ -1,0 +1,11 @@
+.cell-autorun-kernel-restart-enabled .CodeMirror:after {
+    height: 10px;
+    width: 10px;
+    display: block;
+    content: '';
+    position: absolute;
+    right: 10px;
+    top: 10px;
+    border-radius: 50%;
+    background-color: blue;
+}
