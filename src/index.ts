@@ -24,7 +24,7 @@ const reinit_icon = new LabIcon({name: 'test', svgstr: reinit})
 //import { find } from '@lumino/algorithm';
 
 const EXT_NAME = 'cell_autorun_kernel_restart';
-const INITCELL = '${EXT_NAME}:initcell'
+const INITCELL = 'init_cell'
 const INITCELL_ENABLED_CLASS = 'cell-autorun-kernel-restart-enabled'
 
 
@@ -57,9 +57,9 @@ class KernelReInitButton extends ToolbarButton {
 
     this.setupContextMenu();
     this.setCellStyles(nbpanel);
+    this.setupRestartCommand();
 
     nbpanel.context.sessionContext.ready.then(() => { this.setCellStyles(nbpanel); });
-
   }
 
   /**
@@ -79,19 +79,44 @@ class KernelReInitButton extends ToolbarButton {
 
   private setupContextMenu() {
 
-    const command_id = '${EXT_NAME}:toggle_autorun';
+    const command_id = 'cell-autorun-kernel-restart:toggle-autorun';
 
     this.app.commands.addCommand(command_id, {
       label: 'Toggle Init Cell',
       execute: () => { this.toggleInitCell(); }
     });
 
+    this.app.commands.addKeyBinding({
+      command: command_id,
+      args: {},
+      keys: ['Accel I'],
+      selector: '.jp-Notebook'
+    })
+
     this.app.contextMenu.addItem({
       command: command_id,
       selector: '.jp-Cell',
-      rank: 0
+      rank: 501
     });
   }
+
+  private setupRestartCommand() {
+    const command_id = 'cell-autorun-kernel-restart:reinit';
+
+    this.app.commands.addCommand(command_id, {
+      label: 'Restart kernel and launch init cells',
+      execute: () => { this.onReInitButtonClicked(); }
+    })
+
+    this.app.commands.addKeyBinding({
+      command: command_id,
+      args: {},
+      keys: ['Accel 0', 'Accel 0'],
+      selector: '.jp-Notebook'
+    })
+  }
+
+  
 
   private async doKernelInitialization() {
 
