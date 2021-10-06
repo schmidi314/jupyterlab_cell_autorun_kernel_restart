@@ -1,261 +1,276 @@
-import {
-  JupyterFrontEnd,
-  JupyterFrontEndPlugin
-} from '@jupyterlab/application';
-
-import {
-  InputDialog,
-  ToolbarButton
-} from '@jupyterlab/apputils';
-
-import {
-  IMainMenu
-} from '@jupyterlab/mainmenu';
-
-import reinit from '../style/icons/reinit.svg';
-
+import { JupyterFrontEnd, JupyterFrontEndPlugin } from '@jupyterlab/application';
+import { Dialog, InputDialog, ToolbarButton } from '@jupyterlab/apputils';
+import { IMainMenu } from '@jupyterlab/mainmenu';
 import { Cell, CodeCell, CellModel } from '@jupyterlab/cells';
-
-import {
-  INotebookTracker, NotebookPanel
-} from '@jupyterlab/notebook';
-import { ConnectionStatus } from '@jupyterlab/services/lib/kernel/kernel';
-
-import {LabIcon} from '@jupyterlab/ui-components'
+import { INotebookTracker, NotebookPanel } from '@jupyterlab/notebook';
+import { ConnectionStatus, IKernelConnection } from '@jupyterlab/services/lib/kernel/kernel';
+import { LabIcon } from '@jupyterlab/ui-components'
 import { Menu } from '@lumino/widgets';
 
+import reinit from '../style/icons/reinit.svg';
 const reinit_icon = new LabIcon({name: 'test', svgstr: reinit})
 
-//import { find } from '@lumino/algorithm';
+const verbose = false;
 
-const EXT_NAME = 'cell_autorun_kernel_restart';
-const INITCELL_ENABLED_CLASS = 'cell-autorun-kernel-restart-enabled';
-
-
-class KernelReInitButton extends ToolbarButton {
-
+class ReInit {
   app: JupyterFrontEnd;
   nbtracker: INotebookTracker;
   mainmenu: IMainMenu;
   submenu: Menu | null;
+  reinit_menu: Menu | null;
 
   kernel_status_listener_connected: boolean;
   init_on_connect_stage: 'ignore reconnect' | 0 | 1;
 
+  command_id_new_empty_scene  = 'cell-autorun-kernel-restart:new-scene';
+  command_id_duplicate_scene =  'cell-autorun-kernel-restart:duplicate-scene';
+  command_id_rename_scene =     'cell-autorun-kernel-restart:rename-scene';
+  command_id_delete_scene =     'cell-autorun-kernel-restart:delete-scene';
+  command_id_toggle_init_cell = 'cell-autorun-kernel-restart:toggle-initcell';
+  command_id_do_reinit =        'cell-autorun-kernel-restart:do-reinit';
+
   constructor(app: JupyterFrontEnd, nbtracker: INotebookTracker, mainmenu: IMainMenu) {
-    super({onClick: () => { this.onReInitButtonClicked(); }, icon: reinit_icon, tooltip: 'Restart kernel and launch init cells'});
+    if(verbose) console.log('Called constructor of ReInit');
 
     this.app = app;
     this.nbtracker = nbtracker;
     this.mainmenu = mainmenu;
     this.submenu = null;
+    this.reinit_menu = null;
 
     this.kernel_status_listener_connected = false;
-
     this.init_on_connect_stage = 'ignore reconnect';
   }
 
-  attach(nbpanel: NotebookPanel) {
+  initialize() {
+    this.setupGlobalCommands()
+    this.setupReinitMenu() 
 
-    const toolbar = nbpanel.toolbar;
-    let insertionPoint = 7;
-
-    toolbar.insertItem(insertionPoint + 1, 'reinit_button', this);
-
-    this.setupContextMenu();
-    this.setupRestartCommand();
-    this.setupMainMenu();
-
-    nbpanel.context.sessionContext.ready.then(() => { this.onAllCellsInNotebookReady(nbpanel); });
+    // connect some callbacks
+    this.nbtracker.widgetAdded.connect((sender, nbpanel) => { this.onNotebookTabAdded(nbpanel); });
+    this.nbtracker.currentChanged.connect((sender, nbpanel) => { this.onActiveNotebookChanged(nbpanel); });
   }
 
-
-  /**
-   * Privates
+  /** ****************************************************************************************************************************************
+   * Internal Helper Methods
    */
 
-  private addDefaultReinitDataCellIfNotPresent(nbpanel: NotebookPanel) {
-    if(nbpanel.content.model) {
+  // **** setup helpers **********************************************************************************************************************
+  
+  private setupReinitMenu() {
+    this.reinit_menu = new Menu({commands: this.app.commands});
+    this.reinit_menu.title.label = 'ReInit';
 
-      let cell0 = nbpanel.content.widgets[0]
-      console.log('aa', cell0.model.metadata.get('reinit_data'));
+    this.reinit_menu.addItem({command: this.command_id_do_reinit});
+    this.reinit_menu.addItem({command: this.command_id_toggle_init_cell});
+    this.reinit_menu.addItem({type: 'separator'});
+    this.reinit_menu.addItem({command: this.command_id_new_empty_scene});
+    this.reinit_menu.addItem({command: this.command_id_duplicate_scene});
+    this.reinit_menu.addItem({command: this.command_id_rename_scene});
+    this.reinit_menu.addItem({command: this.command_id_delete_scene});
+    this.reinit_menu.addItem({type: 'separator'});
 
-      if(!cell0.model.metadata.get('reinit_data')) {
-        console.log('adding reinit datacell');
+    this.submenu = new Menu({commands: this.app.commands});
+    this.reinit_menu.addItem({type: 'submenu', submenu: this.submenu});
 
-        let reinit_cell = new CellModel({
-          cell: {cell_type: 'raw', source: ['ReInit Data Cell'], metadata: {reinit_data: true, scenes: ['default'], present_scene: 'default'}}
-        });
-        
-        nbpanel.content.model.cells.insert(0, reinit_cell);
-      }
-    } else {
-      console.error('could not add reinit cell');
-    }
+    this.mainmenu.addMenu(this.reinit_menu);
+
+    this.updateSceneMenu();
   }
 
-  private getReinitDataCell(nbpanel: NotebookPanel) {
-    let datacell = nbpanel.content.widgets[0];
-    if(!datacell.model.metadata.get('reinit_data')) {
-      console.error('inconsistent reinit data');
-    }
-    return datacell;
-  }
+  private setupGlobalCommands() {
+    // setup all commands this.command_id_* including key bindings
 
-  private setReinitDataCellStyle(nbpanel: NotebookPanel) {
-      this.getReinitDataCell(nbpanel).hide();
-  }
+    this.app.commands.addCommand(this.command_id_do_reinit, {
+      label: 'Restart kernel and launch init cells',
+      execute: () => { this.doReInit(); }
+    })
 
-  private getPresentScene(nbpanel: NotebookPanel) {
-    return this.getReinitDataCell(nbpanel).model.metadata.get('present_scene');
-  }
+    this.app.commands.addKeyBinding({
+      command: this.command_id_do_reinit,
+      args: {},
+      keys: ['Accel 0', 'Accel 0'],
+      selector: '.jp-Notebook'
+    })
+  
+    this.app.commands.addCommand(this.command_id_toggle_init_cell, {
+      label: 'Toggle Init Cell',
+      execute: () => { this.toggleInitCell(); }
+    });
 
-  private setupMainMenu() {
-    const reinit_menu = new Menu({commands: this.app.commands});
-    reinit_menu.title.label = 'ReInit';
+    this.app.commands.addKeyBinding({
+      command: this.command_id_toggle_init_cell,
+      args: {},
+      keys: ['Accel I'],
+      selector: '.jp-Notebook'
+    })
 
-    reinit_menu.addItem({command: 'cell-autorun-kernel-restart:toggle-autorun'})
-    reinit_menu.addItem({command: 'cell-autorun-kernel-restart:reinit'})
+    this.app.commands.addCommand(this.command_id_new_empty_scene, {
+      label: 'New empty Scene',
+      execute: () => { this.newEmptyScene(); }
+    });
 
-    reinit_menu.addItem({type: 'separator'})
-
-    const command_id_dup = 'cell-autorun-kernel-restart:duplicate-scene';
-    this.app.commands.addCommand(command_id_dup, {
+    this.app.commands.addCommand(this.command_id_duplicate_scene, {
       label: 'Duplicate Present Scene',
       execute: () => { this.duplicatePresentScene(); }
     });
-    const command_id_rename = 'cell-autorun-kernel-restart:rename-scene';
-    this.app.commands.addCommand(command_id_rename, {
+
+    this.app.commands.addCommand(this.command_id_rename_scene, {
       label: 'Rename Present Scene',
       execute: () => { this.renamePresentScene(); }
     });
-    const command_id_del = 'cell-autorun-kernel-restart:delete-scene';
-    this.app.commands.addCommand(command_id_del, {
+
+    this.app.commands.addCommand(this.command_id_delete_scene, {
       label: 'Delete Present Scene',
       execute: () => { this.deletePresentScene(); }
     });
 
-    reinit_menu.addItem({command: command_id_dup})
-    reinit_menu.addItem({command: command_id_rename})
-    reinit_menu.addItem({command: command_id_del})
-
-    reinit_menu.addItem({type: 'separator'})
-    this.mainmenu.addMenu(reinit_menu);
-
-    this.submenu = new Menu({commands: this.app.commands});
-    this.submenu.title.label = 'Present Scene'
-    reinit_menu.addItem({type: 'submenu', submenu: this.submenu});
-
   }
 
-  private duplicatePresentScene() {
-    const nbpanel = this.nbtracker.currentWidget;
-    if(nbpanel) {
+  private setupToolbarButton(nbpanel: NotebookPanel) {
+    let button = new ToolbarButton({
+      icon: reinit_icon,
+      onClick: () => {this.doReInit(); },
+      tooltip: 'Restart kernel and launch init cells'
+    })
 
-      const present_scene = this.getPresentScene(nbpanel);
-      InputDialog.getText({title:'Name of the duplicated scene:'}).then(new_scene => {
-        if(new_scene.value) {
+    nbpanel.toolbar.insertItem(8, 'reinit_button', button);
+  }
 
-          const old_scene_list = this.getReinitDataCell(nbpanel).model.metadata.get('scenes');
-          const new_scene_list: string[] = [];
-          for(let scene of old_scene_list as string[]) {
-              new_scene_list.push(scene);
-          }
-          new_scene_list.push(new_scene.value);
-          this.getReinitDataCell(nbpanel).model.metadata.set('scenes', new_scene_list);
+  // **** access to ReInit metadata **********************************************************************************************************
 
-          const md_tag_old = 'init_scene__' + present_scene;
-          const md_tag_new = 'init_scene__' + new_scene.value;
-          const notebook = nbpanel.content;
-          notebook.widgets.map((cell: Cell) => {
-            if(!!cell.model.metadata.get(md_tag_old)) {
-              cell.model.metadata.set(md_tag_new, true);
-            } else {
-              cell.model.metadata.set(md_tag_new, false);
-            }
-          });
+  private addDefaultReinitDataCellIfNotPresent(nbpanel: NotebookPanel) {
+     
+    if(nbpanel.content.model) {
 
-          this.updateScenesInMenu(nbpanel);
-        }
-      });
+      const cell0 = nbpanel.content.widgets[0];
+      
+      if(!cell0 || !cell0.model.metadata.get('reinit_data')) {
+        if(verbose) console.log('Adding default ReInit Data Cell');
+
+        var reinit_cell = new CellModel({
+          cell: {cell_type: 'raw', source: ['ReInit Data Cell'], metadata: {reinit_data: true, scenes: ['Default Scene'], present_scene: 'Default Scene'}}
+        });
+        
+        nbpanel.content.model.cells.insert(0, reinit_cell);
+        nbpanel.content.update(); // doesn't seem to help
+      }
+    } else {
+      console.error('Could not add default ReInit Data Cell');
     }
   }
 
-  private renamePresentScene() {
+  private getCurrentNotebookReinitDataCell() {
+
+    if(verbose) console.log('getCurrentNotebookReinitDataCell', this.nbtracker.currentWidget?.context.path);
+
     const nbpanel = this.nbtracker.currentWidget;
-    if(nbpanel) {
+    if(!nbpanel) return null;
 
-      const present_scene = this.getPresentScene(nbpanel);
-      InputDialog.getText({title:'Name of the duplicated scene:'}).then(new_scene => {
-        if(new_scene.value) {
+    let datacell = nbpanel.content.widgets[0];
+    if(!datacell.model.metadata.get('reinit_data')) {
+      console.error('inconsistent reinit data');
+      return null;
+    }
 
-          const old_scene_list = this.getReinitDataCell(nbpanel).model.metadata.get('scenes');
-          const new_scene_list: string[] = [];
-          for(let scene of old_scene_list as string[]) {
-            if(scene != present_scene) {
-              new_scene_list.push(scene);
-            }
-          }
-          new_scene_list.push(new_scene.value);
-          this.getReinitDataCell(nbpanel).model.metadata.set('scenes', new_scene_list);
+    return datacell;
+  }
 
-          const md_tag_old = 'init_scene__' + present_scene;
-          const md_tag_new = 'init_scene__' + new_scene.value;
-          const notebook = nbpanel.content;
-          notebook.widgets.map((cell: Cell) => {
-            if(!!cell.model.metadata.get(md_tag_old)) {
-              cell.model.metadata.set(md_tag_new, true);
-              cell.model.metadata.delete(md_tag_old);
-            } else {
-              cell.model.metadata.set(md_tag_new, false);
-              cell.model.metadata.delete(md_tag_old);
-            }
-          });
+  private getCurrentNotebookSceneList() {
+    const datacell = this.getCurrentNotebookReinitDataCell();
+    if(!datacell) return null;
 
-          this.updateScenesInMenu(nbpanel);
+    return datacell.model.metadata.get('scenes') as string[];
+  }
 
-        }
-      });
+  private getCurrentNotebookPresentScene() {
+    const datacell = this.getCurrentNotebookReinitDataCell();
+    if(!datacell) return null;
+
+    const scene_list = this.getCurrentNotebookSceneList()
+    if(scene_list == null || scene_list.length == 0) {
+      console.error('scene_list is empty');
+      return null;
+    }
+    const present_scene = datacell.model.metadata.get('present_scene')?.toString();
+    
+    if(!present_scene) {
+      return scene_list[0];
+    } else {
+      return present_scene;
     }
   }
 
-  private deletePresentScene() {
-    const nbpanel = this.nbtracker.currentWidget;
-    if(nbpanel) {
+  private setCurrentNotebookPresentScene(scene_name: string) {
+    const datacell = this.getCurrentNotebookReinitDataCell();
+    if(!datacell) return;
 
-      const present_scene = this.getPresentScene(nbpanel);
+    const scene_list = this.getCurrentNotebookSceneList()
+    if(scene_list == null || scene_list.length == 0) {
+      console.error('scene_list is empty');
+      return;
+    }
 
-      const old_scene_list = this.getReinitDataCell(nbpanel).model.metadata.get('scenes');
-      const new_scene_list: string[] = [];
-      for(let scene of old_scene_list as string[]) {
-        if(scene != present_scene) {
-          new_scene_list.push(scene);
+    if(!scene_list.includes(scene_name)) {
+      console.error('scene not in scene_list')
+    }
+
+    datacell.model.metadata.set('present_scene', scene_name);
+  }
+
+  private setCurrentNotebookSceneList(scene_list: string[]) {
+    const datacell = this.getCurrentNotebookReinitDataCell();
+    if(!datacell) return;
+
+    datacell.model.metadata.set('scenes', scene_list);
+  }
+
+  private setReinitDataCellStyle() {
+    this.getCurrentNotebookReinitDataCell()?.hide();
+  }
+
+  private async doKernelInitialization() {
+    if(!this.nbtracker.currentWidget) return;
+
+    const present_scene = this.getCurrentNotebookPresentScene();
+    if(!present_scene) return;
+
+    const md_tag_ext = 'init_scene__' + present_scene;
+
+    if(verbose) console.log('executing all cell with tag', md_tag_ext)
+
+    const notebook = this.nbtracker.currentWidget.content;
+    const notebookPanel = this.nbtracker.currentWidget;
+
+    notebook.widgets.map((cell: Cell) => {
+      if(!!cell.model.metadata.get(md_tag_ext)) {
+        if(cell.model.type == 'code') {
+          CodeCell.execute(cell as CodeCell, notebookPanel.sessionContext);
         }
       }
-      this.getReinitDataCell(nbpanel).model.metadata.set('scenes', new_scene_list);
-
-      const md_tag_old = 'init_scene__' + present_scene;
-      const notebook = nbpanel.content;
-      notebook.widgets.map((cell: Cell) => {
-        if(!!cell.model.metadata.get(md_tag_old)) {
-          cell.model.metadata.delete(md_tag_old);
-        } else {
-          cell.model.metadata.delete(md_tag_old);
-        }
-      });
-
-      this.updateScenesInMenu(nbpanel); 
-    }
+    });
   }
 
-  private updateScenesInMenu(nbpanel: NotebookPanel) {
-    const scene_list = this.getReinitDataCell(nbpanel).model.metadata.get('scenes');
-    if(scene_list && this.submenu) {
-      this.submenu.clearItems();
-      for(let scene of scene_list as string[]) {
-        const command_id = this.ensureSceneActivationCommandExistsAndReturnCommandId(scene);
-        this.submenu.addItem({command: command_id});
-      }
+  // **** various ****************************************************************************************************************************
+
+  private updateSceneMenu() {
+
+    if(!this.submenu || !this.reinit_menu) return;
+
+    this.submenu.title.label = 'Present Scene: <none>';
+    this.reinit_menu.title.label = 'ReInit';
+    this.submenu.clearItems();
+
+    const scene_list = this.getCurrentNotebookSceneList();
+    const present_scene = this.getCurrentNotebookPresentScene();
+    if(scene_list == null) return;
+
+    this.submenu.title.label = 'Present Scene: ' + present_scene;
+    this.reinit_menu.title.label = 'ReInit: (' + present_scene + ')';
+
+    for(const scene_name of scene_list) {
+      const command_id = this.ensureSceneActivationCommandExistsAndReturnCommandId(scene_name);
+      this.submenu.addItem({command: command_id})
     }
   }
 
@@ -264,151 +279,268 @@ class KernelReInitButton extends ToolbarButton {
     if(!this.app.commands.hasCommand(command_id)) {
       this.app.commands.addCommand(command_id, {
         label: scene,
-        isToggled: () => { 
-          if(this.nbtracker.currentWidget) {
-            return scene == this.getPresentScene(this.nbtracker.currentWidget); 
-          } else {
-            return false;
-          }
-        },
+        isToggled: () => { return scene == this.getCurrentNotebookPresentScene(); },
         execute: () => { 
-          if(this.nbtracker.currentWidget) {
-            this.getReinitDataCell(this.nbtracker.currentWidget).model.metadata.set('present_scene', scene); 
-            this.setCellStyles(this.nbtracker.currentWidget);
-          } 
+          this.setCurrentNotebookPresentScene(scene);
+          this.updateInitCellDots();
+          this.updateSceneMenu();  
         }
       });
     }
     return command_id;
   }
 
-  private setCellStyles(nbpanel: NotebookPanel) {
+  private updateInitCellDots() {
+    const nbpanel = this.nbtracker.currentWidget;
+    if(!nbpanel) return;
 
-    if(this.nbtracker.currentWidget) {
-      const md_tag = 'init_scene__';
-      const present_scene = this.getPresentScene(this.nbtracker.currentWidget);      
-      const md_tag_ext = md_tag + present_scene;
+    const present_scene = this.getCurrentNotebookPresentScene();
+    const md_tag_ext = 'init_scene__' + present_scene;
 
-      const notebook = nbpanel.content;
-      notebook.widgets.map((cell: Cell) => {
-        if(!!cell.model.metadata.get(md_tag_ext)) {
-          cell.addClass(INITCELL_ENABLED_CLASS);
-        } else {
-          cell.removeClass(INITCELL_ENABLED_CLASS);
-        }
-      });
-    }  
-  }
-
-  private setupContextMenu() {
-
-    const command_id = 'cell-autorun-kernel-restart:toggle-autorun';
-
-    this.app.commands.addCommand(command_id, {
-      label: 'Toggle Init Cell',
-      execute: () => { this.toggleInitCell(); }
+    const notebook = nbpanel.content;
+    notebook.widgets.map((cell: Cell) => {
+      if(!!cell.model.metadata.get(md_tag_ext)) {
+        cell.addClass('cell-autorun-kernel-restart-enabled');
+      } else {
+        cell.removeClass('cell-autorun-kernel-restart-enabled');
+      }
     });
+  }  
 
-    this.app.commands.addKeyBinding({
-      command: command_id,
-      args: {},
-      keys: ['Accel I'],
-      selector: '.jp-Notebook'
-    })
-
-    this.app.contextMenu.addItem({
-      command: command_id,
-      selector: '.jp-Cell',
-      rank: 501
-    });
-  }
-
-  private setupRestartCommand() {
-    const command_id = 'cell-autorun-kernel-restart:reinit';
-
-    this.app.commands.addCommand(command_id, {
-      label: 'Restart kernel and launch init cells',
-      execute: () => { this.onReInitButtonClicked(); }
-    })
-
-    this.app.commands.addKeyBinding({
-      command: command_id,
-      args: {},
-      keys: ['Accel 0', 'Accel 0'],
-      selector: '.jp-Notebook'
-    })
-  }
-
-  private async doKernelInitialization() {
-
-    const md_tag = 'init_scene__';
-    
-    if(this.nbtracker.currentWidget) {
-      const present_scene = this.getPresentScene(this.nbtracker.currentWidget);
-      const md_tag_ext = md_tag + present_scene;
-      console.log('executing all cell with tag', md_tag_ext)
-
-      const notebook = this.nbtracker.currentWidget.content;
-      const notebookPanel = this.nbtracker.currentWidget;
-
-      notebook.widgets.map((cell: Cell) => {
-
-        if(!!cell.model.metadata.get(md_tag_ext)) {
-          if(cell.model.type == 'code') {
-            CodeCell.execute(cell as CodeCell, notebookPanel.sessionContext);
-          }
-        }
-
-      });
-    }
-  }
-
-  /**
+  /** ****************************************************************************************************************************************
    * Callbacks
    */
 
+  // **** handle own commands ****************************************************************************************************************
+
+  async doReInit() {
+
+    const result = await (new Dialog({
+      title: 'Do you really want to re-initialize the kernel with scene "' + this.getCurrentNotebookPresentScene() + '"?',
+      buttons: [Dialog.cancelButton(), Dialog.okButton({label: 'Restart'})]
+    }).launch());
+
+    if(result.button.label == 'Restart') {  
+      this.init_on_connect_stage = 0;
+      this.nbtracker.currentWidget?.context.sessionContext.session?.kernel?.restart();
+    }
+  }
+
   toggleInitCell() {
+    if(verbose) console.log('Toggle Init Cell');
 
     const cell = this.nbtracker.activeCell;
-    const md_tag = 'init_scene__';
+    if(!cell) return;
+    
+    const present_scene = this.getCurrentNotebookPresentScene();
+    const md_tag_ext = 'init_scene__' + present_scene;
 
-    if(this.nbtracker.currentWidget && cell) {
-      const present_scene = this.getPresentScene(this.nbtracker.currentWidget);      
-      const md_tag_ext = md_tag + present_scene;
-
-      if(!cell.model.metadata.get(md_tag_ext)) {
-        cell.model.metadata.set(md_tag_ext, true)
-        cell.addClass(INITCELL_ENABLED_CLASS);
-      } else {
-        cell.model.metadata.set(md_tag_ext, false)
-        cell.removeClass(INITCELL_ENABLED_CLASS);
-      }
-
+    if(!cell.model.metadata.get(md_tag_ext)) {
+      cell.model.metadata.set(md_tag_ext, true)
+      cell.addClass('cell-autorun-kernel-restart-enabled');
+    } else {
+      cell.model.metadata.delete(md_tag_ext)
+      cell.removeClass('cell-autorun-kernel-restart-enabled');
     }
+  }
+
+  newEmptyScene() {
+    if(verbose) console.log('Generating new empty scene');
+
+    const old_scene_list = this.getCurrentNotebookSceneList();
+    if(!old_scene_list) return;
+
+    InputDialog.getText({title:'Name of the new scene:'}).then(new_scene => {
+
+      if(!new_scene.value) return;
+
+      const new_scene_list: string[] = Object.assign([], old_scene_list);  // copy old_scene_list over
+      new_scene_list.push(new_scene.value);
+      this.setCurrentNotebookSceneList(new_scene_list);
+
+      this.setCurrentNotebookPresentScene(new_scene.value);
+      this.updateSceneMenu();  
+      this.updateInitCellDots();
+    });
+
+  }
+
+  duplicatePresentScene() {
+    if(verbose) console.log('Duplicating present scene');
+
+    const present_scene = this.getCurrentNotebookPresentScene();
+    if(!present_scene) return;
+
+    const old_scene_list = this.getCurrentNotebookSceneList();
+    if(!old_scene_list) return;
+
+    const nbpanel = this.nbtracker.currentWidget;
+    if(!nbpanel) return;
+
+    InputDialog.getText({title:'Name of the new scene:'}).then(new_scene => {
+
+      if(!new_scene.value) return;
+
+      // TODO: make sure new scene is not in old scene list
+
+      const new_scene_list: string[] = Object.assign([], old_scene_list);  // copy old_scene_list over
+      new_scene_list.push(new_scene.value);
+      this.setCurrentNotebookSceneList(new_scene_list);
+
+      // set the init_scene__* tags for the new scene
+      const md_tag_old = 'init_scene__' + present_scene;
+      const md_tag_new = 'init_scene__' + new_scene.value;
+      const notebook = nbpanel.content;
+      notebook.widgets.map((cell: Cell) => {
+        if(!!cell.model.metadata.get(md_tag_old)) {
+          cell.model.metadata.set(md_tag_new, true);
+        }
+      });
+      this.setCurrentNotebookPresentScene(new_scene.value);
+      this.updateSceneMenu();  
+      this.updateInitCellDots();
+    });
+  }
+
+  renamePresentScene() {
+    if(verbose) console.log('Renaming present scene');
+
+    const present_scene = this.getCurrentNotebookPresentScene();
+    if(!present_scene) return;
+
+    const old_scene_list = this.getCurrentNotebookSceneList();
+    if(!old_scene_list) return;
+
+    const nbpanel = this.nbtracker.currentWidget;
+    if(!nbpanel) return;
+
+    InputDialog.getText({title:'New name of the scene:'}).then(new_scene_name => {
+      if(!new_scene_name.value) return;
+
+      const new_scene_list: string[] = [];
+      for(let scene of old_scene_list) {
+        if(scene != present_scene) {
+          new_scene_list.push(scene);
+        } else {
+          new_scene_list.push(new_scene_name.value);
+        }
+      }
+      this.setCurrentNotebookSceneList(new_scene_list);
+
+      const md_tag_old = 'init_scene__' + present_scene;
+      const md_tag_new = 'init_scene__' + new_scene_name.value;
+      const notebook = nbpanel.content;
+      notebook.widgets.map((cell: Cell) => {
+        if(!!cell.model.metadata.get(md_tag_old)) {
+          cell.model.metadata.set(md_tag_new, true);
+        } 
+        cell.model.metadata.delete(md_tag_old);
+
+      });
+      this.setCurrentNotebookPresentScene(new_scene_name.value);
+      this.updateSceneMenu();  
+      this.updateInitCellDots();
+    });
+
+  }
+
+  async deletePresentScene() {
+    if(verbose) console.log('Deleting present scene');
+
+    const present_scene = this.getCurrentNotebookPresentScene();
+    if(!present_scene) return;
+
+    const old_scene_list = this.getCurrentNotebookSceneList();
+    if(!old_scene_list) return;
+
+    if(old_scene_list.length == 1) {
+      console.log('cannot delete the last scene')
+      return
+    }
+
+    const nbpanel = this.nbtracker.currentWidget;
+    if(!nbpanel) return;
+
+    const dialog = new Dialog({
+      title: 'Do you really want to delete scene "' + present_scene + '"?',
+      buttons: [Dialog.okButton({label: 'Delete'}), Dialog.cancelButton()]
+    });
+
+    const result = await dialog.launch();
+
+    if(result.button.label == 'Delete') {
+
+      const new_scene_list: string[] = [];
+      for(let scene of old_scene_list) {
+        if(scene != present_scene) {
+          new_scene_list.push(scene);
+        }
+      }
+      this.setCurrentNotebookSceneList(new_scene_list);
+
+      const md_tag_old = 'init_scene__' + present_scene;
+      const notebook = nbpanel.content;
+      notebook.widgets.map((cell: Cell) => {
+        cell.model.metadata.delete(md_tag_old); 
+      });
+
+      this.setCurrentNotebookPresentScene(new_scene_list[0]);
+      this.updateSceneMenu();  
+      this.updateInitCellDots();
+    }
+  }
+
+  // **** react to jupyterlab UI events ******************************************************************************************************
+
+  onNotebookTabAdded(nbpanel: NotebookPanel) {
+    // this is called whenever a new tab for a notebook is opened (includes a new view)
+    if(verbose) console.log('Got new notebook tab for path:', nbpanel.context.path);
+
+    nbpanel.context.sessionContext.ready.then(() => { this.onAllCellsInNotebookReady(nbpanel); });
+    this.setupToolbarButton(nbpanel);
+  }
+
+  onActiveNotebookChanged(nbpanel: NotebookPanel|null) {
+    
+    if(!nbpanel) return;
+    if(verbose) console.log('Changed active notebook tab:', nbpanel.context.path);
+
+    if(!nbpanel.context.sessionContext.isReady) {
+      if(verbose) console.log('Notebook not ready yet:', nbpanel.context.path);
+      return;
+    }
+
+    this.updateSceneMenu();
+    this.updateInitCellDots();
+    this.setReinitDataCellStyle();
   }
 
   onAllCellsInNotebookReady(nbpanel: NotebookPanel) {
+    if(verbose) console.log('All cells ready:', nbpanel.context.path);
+
     this.addDefaultReinitDataCellIfNotPresent(nbpanel);
-    this.setReinitDataCellStyle(nbpanel);
-    this.updateScenesInMenu(nbpanel);
-
-    this.setCellStyles(nbpanel);
-  }
-
-  onReInitButtonClicked() {
-
-    if(!this.kernel_status_listener_connected) {
-      this.nbtracker.currentWidget?.context.sessionContext.session?.kernel?.connectionStatusChanged.connect((_unused, conn_stat) => { 
-        this.kernelConnectionStatusListener(conn_stat); 
-      });
-      this.kernel_status_listener_connected = true;
+    if(!nbpanel.context.sessionContext.session) {
+      console.error('ERROR 01');
+      return;
     }
-    this.init_on_connect_stage = 0;
-    this.nbtracker.currentWidget?.context.sessionContext.session?.kernel?.restart();
+    if(!nbpanel.context.sessionContext.session.kernel) {
+      console.error('ERROR 02');
+      return;
+    }
+    nbpanel.context.sessionContext.session.kernel.connectionStatusChanged.connect((kernel, conn_stat) => {
+      this.kernelConnectionStatusListener(kernel, conn_stat);
+    });
+
+    if(nbpanel != this.nbtracker.currentWidget) {
+      return;
+    }
+
+    this.updateSceneMenu();
+    this.updateInitCellDots();
+    this.setReinitDataCellStyle();
   }
 
-  kernelConnectionStatusListener(conn_stat: ConnectionStatus) {
-    
+  kernelConnectionStatusListener(kernel: IKernelConnection, conn_stat: ConnectionStatus) {
     if(this.init_on_connect_stage == 'ignore reconnect') {
       return;
     }
@@ -427,23 +559,18 @@ class KernelReInitButton extends ToolbarButton {
 }
 
 
-
 /**
  * Initialization data for the jupyterlab_cell_autorun_kernel_restart extension.
  */
 const plugin: JupyterFrontEndPlugin<void> = {
-  id: EXT_NAME,
+  id: 'cell-autorun-kernel-restart',
   autoStart: true,
   requires: [INotebookTracker, IMainMenu],
   activate: (app: JupyterFrontEnd, nbtracker_: INotebookTracker, mainmenu: IMainMenu) => {
 
-    nbtracker_.widgetAdded.connect((nbtracker: INotebookTracker, nbpanel: NotebookPanel | null) => {
-      if(nbpanel) {
-        let but = new KernelReInitButton(app, nbtracker, mainmenu);
-        but.attach(nbpanel);
-      }
-    });
-    
+    const reinit_obj = new ReInit(app, nbtracker_, mainmenu);
+    reinit_obj.initialize();
+
   }
 };
 

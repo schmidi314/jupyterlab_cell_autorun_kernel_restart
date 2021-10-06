@@ -1,7 +1,7 @@
 {
   "name": "jupyterlab_cell_autorun_kernel_restart",
-  "version": "0.2.0",
-  "description": "Define sets of init cells to initialize the kernel with.",
+  "version": "0.4.0",
+  "description": "Define a set of cells as initialization code cells for the kernel. Different scenes may be defined and selected for kernel initialization.",
   "keywords": [
     "jupyter",
     "jupyterlab",
