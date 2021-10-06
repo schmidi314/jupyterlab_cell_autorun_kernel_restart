@@ -1,7 +1,7 @@
 {
   "name": "jupyterlab_cell_autorun_kernel_restart",
-  "version": "0.1.0",
-  "description": "Toggle cells to run whenever the kernel is restarted.",
+  "version": "0.2.0",
+  "description": "Define sets of init cells to initialize the kernel with.",
   "keywords": [
     "jupyter",
     "jupyterlab",
@@ -48,8 +48,10 @@
     "@jupyterlab/application": "^3.1.13",
     "@jupyterlab/apputils": "^3.1.13",
     "@jupyterlab/cells": "^3.1.13",
+    "@jupyterlab/mainmenu": "^3.1.15",
     "@jupyterlab/notebook": "^3.1.13",
-    "@jupyterlab/ui-components": "^3.1.13"
+    "@jupyterlab/ui-components": "^3.1.13",
+    "@lumino/widgets": "^1.28.0"
   },
   "devDependencies": {
     "@jupyterlab/builder": "^3.1.0",
