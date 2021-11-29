@@ -1,3 +1,5 @@
+**Deprecated!** Use https://github.com/schmidi314/jupyterlab-scenes instead.
+
 # jupyterlab_cell_autorun_kernel_restart
 
 [![Github Actions Status](https://github.com/schmidi314/jupyterlab_cell_autorun_kernel_restart/workflows/Build/badge.svg)](https://github.com/schmidi314/jupyterlab_cell_autorun_kernel_restart/actions/workflows/build.yml)[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/schmidi314/jupyterlab_cell_autorun_kernel_restart/main?urlpath=lab)
